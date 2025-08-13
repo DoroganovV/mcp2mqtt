@@ -1,0 +1,40 @@
+services:
+# ------------------------------ MQTT -----------------------------------------
+  mosquitto:
+    container_name: MQTT
+    image: eclipse-mosquitto:2
+    restart: always
+    mem_limit: 256m
+    cpus: '1'
+    ports:
+      - 8883:1883
+      - 9001:9001
+    volumes:
+      - .\mosquitto\config:/mosquitto/config
+      - .\mosquitto\data:/mosquitto/data
+      - .\mosquitto\log:/mosquitto/log
+    user: '1000:1000'
+
+# ------------------------------ mcp2mqtt -------------------------------------
+  mcp2mqtt:
+    container_name: mcp2mqtt
+    image: node:latest
+    restart: always
+    mem_limit: 256m
+    cpus: '1'
+    depends_on:
+      - mosquitto
+    user: "node"
+    working_dir: /home/node/app
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - .\mcp2mqtt:/home/node/app
+    ports:
+      - "8013:3000"
+    command: bash -c "npm install && node mcp-server.ts"
+
+networks:
+  default:
+    external: true
+    name: shared_network
