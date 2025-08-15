@@ -7,6 +7,9 @@ Used ideas and some modules from [Project](https://github.com/munrexio/yandex2mq
 ###### 13.08.2025
 First commit - added test get methods exampleTool (ping) and getAllDevices (all devices with values)
 
+###### 15.08.2025
+Stable operation of n8n with sensor polling and operation with switching on/off the light has been achieved via MCP. The question of temperature and brightness remains.
+
 ## What is MCP?
 **Model Context Protocol (MCP)** provides a standardized approach to integrate custom tools into AI-assisted development environments. With MCP, you can define tools that perform specific tasks—such as retrieving external data, validating code, or enforcing coding standards—and the AI assistant in your IDE can call these tools automatically based on context. This helps improve developer productivity, ensures consistent quality, and streamlines workflows.
 
