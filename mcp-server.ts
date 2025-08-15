@@ -4,21 +4,41 @@ import express from "express";
 import { request, response } from "express";
 import mqtt from "mqtt"
 import { config } from "./config.mjs"
-import { Device, getAllDevices, getDevice } from "./device.mjs"
+import { Device, getAllDevices, getDevice, setDeviceValue } from "./device.mjs"
+import { z } from "zod";
 
-/* ----------------------------------------- MPC ----------------------------------------- */
 function getServer() {
   const server = new McpServer({ name: "MCP Server Vitaly Doroganov", version: "0.0.1" });
-
-  /*server.resource("getAllDevices", "Get devices", {}, async () => {
-    return { content: getAllDevices() };
-  });*/
 
   server.tool(
     "getAllDevices",
     "Get all devices",
     async () => {
       return { content: getAllDevices() };
+    }
+  );
+
+  server.tool(
+    "getDevice",
+    "Get capabilities and properties of device",
+    {
+      deviceId: z.string().describe('Device ID'),
+    },
+    async ({ deviceId }) => {
+      return { content: [{ type: "text", text: getDevice(deviceId) }] };
+    }
+  );
+
+  server.tool(
+    "setDeviceInstanceValue",
+    "Set capability value of device",
+    {
+      deviceId: z.string().describe('Device ID'),
+      instance: z.string().describe('Instance name'),
+      value: z.string().describe('Value to set'),
+    },
+    async ({ deviceId, instance, value }) => {
+      return { content: [{ type: "text", text: setDeviceValue(deviceId, instance, value) }] };
     }
   );
 
@@ -38,8 +58,8 @@ app.post("/mcp", async (req: request, res: response) => {
   try {
     const server = getServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    
-    res.on("close", () => { 
+
+    res.on("close", () => {
       console.log("Request closed");
       transport.close();
       server.close();
@@ -47,12 +67,12 @@ app.post("/mcp", async (req: request, res: response) => {
 
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
-  } 
+  }
   catch (error) {
     console.error("Error handling request:", error);
     if (!res.headersSent) {
-      res.status(500).json({ 
-        jsonrpc: "2.0", 
+      res.status(500).json({
+        jsonrpc: "2.0",
         error: { code: -32603, message: "Internal Server Error" },
         id: null
       });
@@ -60,7 +80,8 @@ app.post("/mcp", async (req: request, res: response) => {
   }
 });
 
-/* ----------------------------------------- MQTT ----------------------------------------- */
+
+/* cache devices from config to global */
 global.devices = [];
 if (config.devices) {
   config.devices.forEach(opts => {
@@ -68,16 +89,18 @@ if (config.devices) {
   });
 }
 
+/* create subscriptions array */
 const subscriptions = [];
 global.devices.forEach(device => {
   device.data.custom_data.mqtt.forEach(mqtt => {
-    const { instances, state: topic, sensor } = mqtt;
-    if (instances != undefined && topic != undefined) {
-      subscriptions.push({ deviceId: device.data.id, instances, topic, sensor });
+    const { instance, state: topic } = mqtt;
+    if (instance != undefined && topic != undefined) {
+      subscriptions.push({ deviceId: device.data.id, instance, topic });
     }
   });
 });
 
+/* Create MQTT client (variable) in global */
 //return;
 global.mqttClient = mqtt.connect(`mqtt://${config.mqtt.host}`, {
   port: config.mqtt.port,
@@ -93,15 +116,12 @@ global.mqttClient = mqtt.connect(`mqtt://${config.mqtt.host}`, {
   //console.log('subscription', subscription)
   if (subscription == undefined) return;
 
-  const { deviceId, instances, sensor } = subscription;
+  const { deviceId, instance } = subscription;
   const ldevice = global.devices.find(d => d.data.id == deviceId);
 
-  instances.forEach(instance => {
-    if (!ldevice.updateState(`${message}`, instance, sensor)) return;
-  });
+  if (!ldevice.updateState(`${message}`, instance)) return;
 });
 
-/* ----------------------------------------- Start ----------------------------------------- */
-app.listen(3000, () => { 
+app.listen(3000, () => {
   console.log("MCP server listening on port 3000");
 });

@@ -8,10 +8,7 @@ export class Device {
       description: options.description || '',
       room: options.room || '',
       type: options.type || 'devices.types.light',
-      custom_data: {
-        mqtt: options.mqtt || [],
-        valueMapping: options.valueMapping || [],
-      },
+      custom_data: { mqtt: options.mqtt || [] },
       capabilities: (options.capabilities || []).map(c => Object.assign({}, c, { state: (c.state == undefined) ? this.initState(c) : c.state })),
       properties: (options.properties || []).map(p => Object.assign({}, p, { state: (p.state == undefined) ? this.initState(p) : p.state })),
     };
@@ -23,9 +20,7 @@ export class Device {
   /*  Create init state (for capabilities and properties) on device object create */
   initState(cp) {
     const { type, parameters } = cp;
-    const actType = String(type).split('.')[2];
-
-    switch (actType) {
+    switch (type) {
       case 'float': {
         return {
           instance: parameters.instance,
@@ -92,76 +87,38 @@ export class Device {
 
   /* Find 'set' topic by instance*/
   findTopicByInstance(instance) {
-    return this.data.custom_data.mqtt.find(i => i.instances.indexOf(instance) > -1 && i.set != '').set;
-  }
-
-  /* Get mapped value (if exist) for capability type */
-  /**
-   * 
-   * @param {*} val value
-   * @param {*} actType capability type
-   * @param {*} y2m mapping direction (yandex to mqtt, mqtt to yandex)
-   */
-  getMappedValue(val, actType, y2m, instance) {
-    const mapObj = this.data.custom_data.valueMapping.find(m => m.type == instance);
-    if (mapObj !== undefined) {
-      return JSON.parse(val)[mapObj.subtopic];
-    }
-
-    const map = this.data.custom_data.valueMapping.find(m => m.type == actType);
-    if (map == undefined) return val;
-
-    var from, to;
-    if (y2m == true) [from, to] = map.mapping;
-    else[to, from] = map.mapping;
-
-    const mappedValue = to[from.indexOf(val)];
-    return (mappedValue != undefined) ? mappedValue : val;
+    return this.data.custom_data.mqtt.find(i => i.instance === instance).set;
   }
 
   getInfo() {
     const { id, name, description, room, type, capabilities, properties } = this.data;
     return { id, name, description, room, type, capabilities, properties };
   }
-  
-  getMcpInfo() {
-    const { id, name, room, capabilities, properties } = this.data;
-    const prop = properties.map(p => `${p.state.instance} ${p.state.value} ${p.parameters.unit}`).join(', ');
-    return { type: "text", text: `'${id}' ${name} (${room}) properties: ${prop}` };
-  }
 
-  /* Get only needed for response device info (bun not full device defenition) */
-  getState() {
-    const { id, capabilities, properties } = this.data;
-    const device = {
-      id,
-      capabilities: (() => {
-        return capabilities.filter(c => c.retrievable === true).map(c => {
-          return {
-            type: c.type,
-            state: c.state
-          }
-        })
-      })() || [],
-      properties: (() => {
-        return properties.filter(p => p.retrievable == true).map(p => {
-          return {
-            type: p.type,
-            state: p.state
-          }
-        })
-      })() || [],
+  getMcpInfo() {
+    const { id, name, room, capabilities, properties, type } = this.data;
+    let message = `Device ID: ${id}\nName: ${name}\nRoom: ${room}\nType: ${type}\n`;
+    if (properties.length > 0) {
+      const prop = properties.map(p => `${p.state.instance}: ${p.state.value} ${p.parameters?.unit ?? ""}`).join('\n');
+      message += `Properties:\n${prop}\n`;
     }
-    return device;
+    if (capabilities.length > 0) {
+      let cap = "";
+      for (const c of capabilities) {
+        cap += `${c.state.instance}: ${c.state.value} ${c.parameters?.unit ?? ""}`;
+        if (c.parameters?.acceptableValues) {
+          cap += ` (acceptable values: ${c.parameters.acceptableValues.map(v => `${v.id} ${v.discription ?? ""}`).join(', ')})`;
+        }
+        cap += '\n';
+      }
+      message += `Capabilities:\n${cap}\n`;
+    }
+    return message;
   }
 
   /* Change device capability state and publish value to MQTT topic */
-  setCapabilityState(val, type, instance) {
-    //console.log(val, type, instance);
+  setCapabilityState(value, type, instance) {
     const { id } = this.data;
-    const actType = String(type).split('.')[2];
-    const value = this.getMappedValue(val, actType, true, instance);
-
     let message;
     let topic;
     try {
@@ -174,38 +131,25 @@ export class Device {
     } catch (e) {
       topic = false;
       console.log('error message:', `${e}`);
+      return "Error: " + e.message;
     }
 
     if (topic) {
-      //global.mqttClient.publish(topic, message);
+      global.mqttClient.publish(topic, message);
     }
 
-    return {
-      type,
-      'state': {
-        instance,
-        'action_result': {
-          'status': 'DONE'
-        }
-      }
-    }
+    return "DONE";
   }
 
   /* Update device capability or property state */
-  updateState(val, instance, sensor) {
+  updateState(value, instance) {
     const { id, capabilities, properties } = this.data;
 
     try {
-      const cp = !sensor ? capabilities.find(cp => (cp.state.instance === instance)) : properties.find(cp => (cp.state.instance === instance));
+      const cp = [].concat(capabilities, properties).find(cp => (cp.state.instance === instance));
       if (cp == undefined) throw new Error(`Can't instance '${instance}' in device '${id}'`);
 
-      const actType = String(cp.type).split('.')[2];
-      const value = this.getMappedValue(val, actType, false, instance);
-      const newValue = this.normalizeValue(value, actType);
-
-      /*if (['humidity', 'temperature'].indexOf(instance) != -1 && Math.abs(cp.state.value - newValue) < 1 )
-        return false;*/
-
+      const newValue = this.normalizeValue(value, cp.type);
       if (cp.state.value != newValue) {
         cp.state = { instance, value: newValue };
         return true;
@@ -223,14 +167,14 @@ export class Device {
       case 'range':
       case 'float': {
         if (val == undefined) return 0.0;
-          try {
-            const value = parseFloat(val);
-            return isNaN(value) ? 0.0 : value;
-          } catch (e) {
-            logger.log('error', { message: `Can't parse to float: ${val}` });
-            return 0.0;
-            }
-          }
+        try {
+          const value = parseFloat(val);
+          return isNaN(value) ? 0.0 : value;
+        } catch (e) {
+          logger.log('error', { message: `Can't parse to float: ${val}` });
+          return 0.0;
+        }
+      }
       case 'toggle':
       case 'on_off': {
         if (val == undefined) return false;
@@ -251,39 +195,41 @@ export function getAllDevices() {
     };
     return results;
   } catch (e) {
-    console.log('error', {message: `${e}`});
-    return [{ type: "text", text: `Exception` }];
+    console.log('error', { message: `${e}` });
+    return [{ type: "text", text: `Exception ${e}` }];
   }
 }
 
 export function getDevice(deviceId) {
   try {
-    const foundDevices = global.devices.filter(x => x.data.id == deviceId);
-    if (foundDevices.length == 0) 
-      return { type: "text", text: `Device not found` };
+    const foundDevice = global.devices.find(x => x.data.id == deviceId);
+    if (!foundDevice)
+      return `Device not found`;
 
     //console.log('Info device:', JSON.stringify(d.getMcpInfo()));
-    return foundDevices[0].getMcpInfo();
+    return foundDevice.getMcpInfo();
   } catch (e) {
-    console.log('error', {message: `${e}`});
-    return { type: "text", text: `Exception` };
+    console.log('error', { message: `${e}` });
+    return `Exception ${e}`;
   }
 }
-/*
+
 export function setDeviceValue(deviceId, instance, value) {
   try {
-    const foundDevices = global.devices.filter(x => x.data.id == deviceId);
-    if (foundDevices.length == 0) 
-      return { type: "text", text: `Device not found` };
+    const foundDevice = global.devices.find(x => x.data.id == deviceId);
+    if (!foundDevice)
+      return `Device not found`;
 
-    const foundInstances = foundDevice.properties.filter(p => p.state.instance == instance);
-    if (foundInstances.length == 0) 
-      return { type: "text", text: `Instance not found` };
+    const capability = foundDevice.data.capabilities.find(p => p.state.instance == instance);
+    if (!capability)
+      return `Capability not found`;
 
-      //const prop = properties.map(p => `${p.state.instance} ${p.state.value} ${p.parameters.unit}`).join(', ');
-    return { type: "text", text: `${foundInstances[0].state.value} ${foundInstances[0].parameters.unit}` };
+    if (capability.parameters?.acceptableValues && capability.parameters.acceptableValues.filter(v => v.id == value).length == 0)
+        return `Value '${value}' not in acceptable values: ${capability.parameters.acceptableValues.map(v => v.id).join(', ')}`;
+
+    return foundDevice.setCapabilityState(value, capability.type, instance);
   } catch (e) {
-    console.log('error', {message: `${e}`});
-    return { type: "text", text: `Exception` };
+    console.log('error', { message: `${e}` });
+    return `Exception ${e}`;
   }
-}*/
+}
